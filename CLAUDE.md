@@ -26,3 +26,11 @@ Rules:
 - Never write production code without an approved spec, plan and tasks.
 - Spec Kit scripts are PowerShell: `.specify/scripts/powershell/`.
 - Do not edit files under `.specify/templates/` unless intentionally customizing the workflow.
+
+## Git workflow
+
+- NEVER commit directly on `main`.
+- Always create a feature branch from an up-to-date `main` and commit there:
+  - Spec Kit features: the `NNN-feature-name` branch created by `/speckit-specify`.
+  - Other work: a descriptive prefix such as `docs/...`, `chore/...`, `fix/...`.
+- Push the feature branch (never `main`); changes reach `main` only through a pull request.
