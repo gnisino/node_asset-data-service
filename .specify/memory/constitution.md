@@ -83,7 +83,11 @@ Rationale: a small, observable service is easier to operate and evolve than a sp
 ## Technology & Data Constraints
 
 - **Runtime**: Node.js active LTS (currently 24.x) with **TypeScript** in `strict` mode;
-  ES modules; `any` is forbidden except at justified, documented boundaries.
+  `any` is forbidden except at justified, documented boundaries.
+- **Module system**: ES modules by default. Applications built on NestJS MAY compile to
+  CommonJS, because NestJS dependency injection relies on decorator metadata that is unreliable
+  under native ESM; ESM-only dependencies are then consumed through Node's `require(esm)`.
+  This exception needs no per-feature justification.
 - **Tooling**: ESLint + Prettier enforced; a lockfile MUST be committed; dependencies are pinned
   and reviewed before adoption.
 - **Framework, persistence and libraries** (HTTP framework, database, ORM/query builder,
@@ -116,4 +120,4 @@ Rationale: a small, observable service is easier to operate and evolve than a sp
 - Any justified deviation MUST be recorded in the affected `plan.md` Complexity Tracking table.
 - Runtime guidance for AI agents lives in `CLAUDE.md` and MUST stay consistent with this file.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-14 | **Last Amended**: 2026-11-14
+**Version**: 1.1.0 | **Ratified**: 2026-11-14 | **Last Amended**: 2026-11-17
