@@ -1,0 +1,731 @@
+openapi: 3.1.0
+info:
+  title: Asset Data Service — HV Transformer Registry
+  version: 1.0.0
+  description: |
+    Registry of high-voltage power transformers (feature 001).
+
+    - Physical values carry their unit in the field name (`Mva`, `Kv`, `Hz`).
+    - Errors use RFC 9457 Problem Details (`application/problem+json`).
+    - Mutations require `If-Match` with the current `ETag` (optimistic concurrency).
+    - Roles are cumulative: `viewer` ⊂ `editor` ⊂ `administrator`.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Transformers
+  - name: History
+  - name: Health
+
+paths:
+  /v1/transformers:
+    get:
+      tags: [Transformers]
+      operationId: listTransformers
+      summary: List transformers (paginated, filterable)
+      description: |
+        Requires role `viewer`. `visibility` other than `active` requires `administrator`.
+        Ordered by registration time, newest first (ties broken by id).
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          description: Filter by one or more lifecycle statuses (repeat the parameter).
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/LifecycleStatus' }
+            uniqueItems: true
+          style: form
+          explode: true
+        - name: manufacturer
+          in: query
+          description: Case-insensitive exact match.
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: hvVoltageKv
+          in: query
+          description: Exact HV winding rated voltage in kV.
+          schema: { $ref: '#/components/schemas/VoltageKv' }
+        - name: hvVoltageKvMin
+          in: query
+          description: |
+            Minimum HV winding rated voltage in kV (inclusive). Must not exceed
+            `hvVoltageKvMax` when both are given (422 `/problems/validation-error`).
+          schema: { $ref: '#/components/schemas/VoltageKv' }
+        - name: hvVoltageKvMax
+          in: query
+          description: |
+            Maximum HV winding rated voltage in kV (inclusive). Must not be lower than
+            `hvVoltageKvMin` when both are given (422 `/problems/validation-error`).
+          schema: { $ref: '#/components/schemas/VoltageKv' }
+        - name: substation
+          in: query
+          description: Case-insensitive exact match.
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: bay
+          in: query
+          description: Case-insensitive exact match.
+          schema: { type: string, minLength: 1, maxLength: 50 }
+        - name: visibility
+          in: query
+          description: '`removed` and `all` are restricted to administrators.'
+          schema:
+            type: string
+            enum: [active, removed, all]
+            default: active
+      responses:
+        '200':
+          description: A page of transformers.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransformerPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Transformers]
+      operationId: registerTransformer
+      summary: Register a transformer
+      description: Requires role `editor`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransformerCreate' }
+      responses:
+        '201':
+          description: Transformer registered.
+          headers:
+            Location:
+              description: URL of the new transformer.
+              schema: { type: string }
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transformer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /v1/transformers/{transformerId}:
+    parameters:
+      - $ref: '#/components/parameters/TransformerId'
+    get:
+      tags: [Transformers]
+      operationId: getTransformer
+      summary: Get a transformer
+      description: |
+        Requires role `viewer`. Removed transformers are returned only to administrators;
+        other roles receive 404.
+      responses:
+        '200':
+          description: The transformer.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transformer' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Transformers]
+      operationId: updateTransformer
+      summary: Update transformer data
+      description: |
+        Requires role `editor`. JSON Merge Patch (RFC 7396). Lifecycle status cannot be changed
+        here (use status changes). Required fields cannot be set to `null`; optional fields
+        are cleared with `null`. A patch that changes nothing is rejected with 422
+        `/problems/no-changes`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: '#/components/schemas/TransformerPatch' }
+      responses:
+        '200':
+          description: Updated transformer.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transformer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /v1/transformers/{transformerId}/status-changes:
+    parameters:
+      - $ref: '#/components/parameters/TransformerId'
+    post:
+      tags: [Transformers]
+      operationId: changeTransformerStatus
+      summary: Change the lifecycle status
+      description: |
+        Requires role `editor`. Allowed transitions: `in_service` ↔ `out_of_service`,
+        either → `decommissioned`. `decommissioned` is final (409
+        `/problems/invalid-status-transition`). A change to the current status is a no-op and is
+        rejected with 422 `/problems/no-changes`.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusChangeRequest' }
+      responses:
+        '200':
+          description: Transformer with its new status.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transformer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /v1/transformers/{transformerId}/removal:
+    parameters:
+      - $ref: '#/components/parameters/TransformerId'
+    post:
+      tags: [Transformers]
+      operationId: removeTransformer
+      summary: Remove an erroneous entry (soft deletion)
+      description: |
+        Requires role `administrator`. The record is hidden from non-administrators but never
+        deleted. Use lifecycle status `decommissioned` for real end-of-life assets instead.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReasonRequest' }
+      responses:
+        '200':
+          description: The removed transformer.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transformer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /v1/transformers/{transformerId}/restoration:
+    parameters:
+      - $ref: '#/components/parameters/TransformerId'
+    post:
+      tags: [Transformers]
+      operationId: restoreTransformer
+      summary: Restore a removed entry
+      description: |
+        Requires role `administrator`. Fails with 409 if an active transformer with the same
+        manufacturer + serial number exists, or if the record is not removed.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReasonRequest' }
+      responses:
+        '200':
+          description: The restored transformer.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transformer' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /v1/transformers/{transformerId}/history:
+    parameters:
+      - $ref: '#/components/parameters/TransformerId'
+    get:
+      tags: [History]
+      operationId: getTransformerHistory
+      summary: Get the change history (oldest first)
+      description: |
+        Requires role `viewer`. History of removed transformers is visible to administrators
+        only (others receive 404).
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of audit entries in chronological order.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuditEntryPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /health/live:
+    get:
+      tags: [Health]
+      operationId: liveness
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthStatus' }
+
+  /health/ready:
+    get:
+      tags: [Health]
+      operationId: readiness
+      summary: Readiness probe (database reachable)
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthStatus' }
+        '503':
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthStatus' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC access token from the organization's identity provider.
+
+  parameters:
+    TransformerId:
+      name: transformerId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Current `ETag` of the transformer. Missing → 428, stale → 412.
+      schema: { type: string, examples: ['"3"'] }
+
+  headers:
+    ETag:
+      description: Strong entity tag holding the record version, e.g. `"3"`.
+      schema: { type: string }
+
+  schemas:
+    LifecycleStatus:
+      type: string
+      enum: [in_service, out_of_service, decommissioned]
+
+    VoltageKv:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 1200
+      description: Voltage in kilovolts (kV).
+
+    PowerMva:
+      type: number
+      exclusiveMinimum: 0
+      maximum: 2000
+      description: Apparent power in megavolt-amperes (MVA).
+
+    VectorGroup:
+      type: string
+      pattern: '^(?:D|YN|Y|ZN|Z|I)(?:(?:d|yn|y|zn|z|a|i)(?:1[01]|[0-9])){1,2}$'
+      description: Vector group in IEC 60076-1 notation, e.g. `Dyn11`, `YNd1`, `YNyn0d1`.
+      examples: [Dyn11, YNd11, YNyn0d1]
+
+    CoolingType:
+      type: string
+      pattern: '^[OKLokl][NFDnfd][AWaw][NFnf](?:/[OKLokl][NFDnfd][AWaw][NFnf]){0,2}$'
+      description: |
+        IEC 60076-2 cooling code(s), e.g. `ONAN`, `ONAN/ONAF`. Case-insensitive on input,
+        always returned upper-case.
+      examples: [ONAN, ONAN/ONAF, ONAN/ONAF/OFAF]
+
+    ShortText:
+      type: string
+      minLength: 1
+      maxLength: 100
+      description: Leading/trailing whitespace is trimmed; must not be blank after trimming.
+
+    Location:
+      type: object
+      additionalProperties: false
+      required: [substation]
+      properties:
+        substation: { $ref: '#/components/schemas/ShortText' }
+        bay:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 50
+
+    LocationPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        substation: { $ref: '#/components/schemas/ShortText' }
+        bay:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 50
+
+    TransformerCreate:
+      type: object
+      additionalProperties: false
+      required:
+        - manufacturer
+        - model
+        - serialNumber
+        - ratedPowerMva
+        - hvRatedVoltageKv
+        - lvRatedVoltageKv
+        - ratedFrequencyHz
+        - phases
+        - vectorGroup
+        - coolingType
+        - location
+        - status
+      properties:
+        manufacturer: { $ref: '#/components/schemas/ShortText' }
+        model: { $ref: '#/components/schemas/ShortText' }
+        serialNumber: { $ref: '#/components/schemas/ShortText' }
+        yearOfManufacture:
+          type: [integer, 'null']
+          minimum: 1900
+          description: Must not be later than the current year.
+        ratedPowerMva: { $ref: '#/components/schemas/PowerMva' }
+        hvRatedVoltageKv: { $ref: '#/components/schemas/VoltageKv' }
+        lvRatedVoltageKv: { $ref: '#/components/schemas/VoltageKv' }
+        tertiaryRatedVoltageKv:
+          oneOf:
+            - $ref: '#/components/schemas/VoltageKv'
+            - type: 'null'
+        ratedFrequencyHz: { type: integer, enum: [50, 60] }
+        phases: { type: integer, enum: [1, 3] }
+        vectorGroup: { $ref: '#/components/schemas/VectorGroup' }
+        coolingType: { $ref: '#/components/schemas/CoolingType' }
+        location: { $ref: '#/components/schemas/Location' }
+        status: { $ref: '#/components/schemas/LifecycleStatus' }
+        statusEffectiveDate:
+          type: string
+          format: date
+          description: Defaults to today; must not be in the future.
+      examples:
+        - manufacturer: Siemens Energy
+          model: TLX 400
+          serialNumber: TR-2024-0042
+          yearOfManufacture: 2024
+          ratedPowerMva: 250
+          hvRatedVoltageKv: 380
+          lvRatedVoltageKv: 132
+          tertiaryRatedVoltageKv: null
+          ratedFrequencyHz: 50
+          phases: 3
+          vectorGroup: YNyn0
+          coolingType: ONAN/ONAF
+          location: { substation: SS-Nord, bay: B04 }
+          status: in_service
+
+    TransformerPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: JSON Merge Patch. `status` and system fields are not patchable.
+      properties:
+        manufacturer: { $ref: '#/components/schemas/ShortText' }
+        model: { $ref: '#/components/schemas/ShortText' }
+        serialNumber: { $ref: '#/components/schemas/ShortText' }
+        yearOfManufacture:
+          type: [integer, 'null']
+          minimum: 1900
+        ratedPowerMva: { $ref: '#/components/schemas/PowerMva' }
+        hvRatedVoltageKv: { $ref: '#/components/schemas/VoltageKv' }
+        lvRatedVoltageKv: { $ref: '#/components/schemas/VoltageKv' }
+        tertiaryRatedVoltageKv:
+          oneOf:
+            - $ref: '#/components/schemas/VoltageKv'
+            - type: 'null'
+        ratedFrequencyHz: { type: integer, enum: [50, 60] }
+        phases: { type: integer, enum: [1, 3] }
+        vectorGroup: { $ref: '#/components/schemas/VectorGroup' }
+        coolingType: { $ref: '#/components/schemas/CoolingType' }
+        location: { $ref: '#/components/schemas/LocationPatch' }
+
+    Transformer:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - manufacturer
+        - model
+        - serialNumber
+        - yearOfManufacture
+        - ratedPowerMva
+        - hvRatedVoltageKv
+        - lvRatedVoltageKv
+        - tertiaryRatedVoltageKv
+        - ratedFrequencyHz
+        - phases
+        - vectorGroup
+        - coolingType
+        - location
+        - status
+        - statusEffectiveDate
+        - removed
+        - version
+        - createdAt
+        - createdBy
+        - updatedAt
+        - updatedBy
+      properties:
+        id: { type: string, format: uuid }
+        manufacturer: { type: string }
+        model: { type: string }
+        serialNumber: { type: string }
+        yearOfManufacture: { type: [integer, 'null'] }
+        ratedPowerMva: { type: number }
+        hvRatedVoltageKv: { type: number }
+        lvRatedVoltageKv: { type: number }
+        tertiaryRatedVoltageKv: { type: [number, 'null'] }
+        ratedFrequencyHz: { type: integer, enum: [50, 60] }
+        phases: { type: integer, enum: [1, 3] }
+        vectorGroup: { type: string }
+        coolingType: { type: string }
+        location:
+          type: object
+          additionalProperties: false
+          required: [substation, bay]
+          properties:
+            substation: { type: string }
+            bay: { type: [string, 'null'] }
+        status: { $ref: '#/components/schemas/LifecycleStatus' }
+        statusEffectiveDate: { type: string, format: date }
+        removed: { type: boolean }
+        removal:
+          description: Present only when `removed` is true (administrators only).
+          type: object
+          additionalProperties: false
+          required: [removedAt, removedBy, reason]
+          properties:
+            removedAt: { type: string, format: date-time }
+            removedBy: { type: string }
+            reason: { type: string }
+        version: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        createdBy: { type: string }
+        updatedAt: { type: string, format: date-time }
+        updatedBy: { type: string }
+
+    TransformerPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, totalItems, totalPages]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Transformer' }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        totalItems: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+
+    StatusChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [status, reason]
+      properties:
+        status: { $ref: '#/components/schemas/LifecycleStatus' }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        effectiveDate:
+          type: string
+          format: date
+          description: Defaults to today; must not be in the future.
+
+    ReasonRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 500 }
+
+    AuditAction:
+      type: string
+      enum: [created, updated, status_changed, removed, restored]
+
+    FieldChange:
+      type: object
+      additionalProperties: false
+      required: [field, previous, new]
+      properties:
+        field:
+          type: string
+          description: Dotted path of the field, e.g. `location.bay`.
+        previous: {}
+        new: {}
+
+    AuditEntry:
+      type: object
+      additionalProperties: false
+      required: [id, transformerId, action, actor, occurredAt, reason, changes]
+      properties:
+        id: { type: string, format: uuid }
+        transformerId: { type: string, format: uuid }
+        action: { $ref: '#/components/schemas/AuditAction' }
+        actor:
+          type: object
+          additionalProperties: false
+          required: [subject, name]
+          properties:
+            subject: { type: string }
+            name: { type: [string, 'null'] }
+        occurredAt: { type: string, format: date-time }
+        reason: { type: [string, 'null'] }
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/FieldChange' }
+
+    AuditEntryPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, totalItems, totalPages]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AuditEntry' }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        totalItems: { type: integer, minimum: 0 }
+        totalPages: { type: integer, minimum: 0 }
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, error] }
+        details: { type: object }
+
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: |
+            One of `/problems/bad-request`, `/problems/unauthorized`, `/problems/forbidden`,
+            `/problems/not-found`, `/problems/duplicate-transformer`,
+            `/problems/invalid-status-transition`, `/problems/invalid-removal-state`,
+            `/problems/precondition-failed`, `/problems/precondition-required`,
+            `/problems/validation-error`, `/problems/no-changes`, `/problems/internal-error`.
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        requestId: { type: string }
+        existingTransformerId:
+          type: string
+          format: uuid
+          description: For `duplicate-transformer`, the id of the conflicting record.
+        errors:
+          type: array
+          description: For `validation-error`, every invalid field.
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string, description: 'Dotted path, e.g. `location.substation`.' }
+              message: { type: string }
+
+  responses:
+    BadRequest:
+      description: Malformed request (e.g. invalid JSON).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing or invalid access token.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: The caller's role does not allow this operation.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: Transformer not found (or removed and caller is not an administrator).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Duplicate manufacturer + serial number, invalid status transition, or invalid
+        removal/restoration state.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: '`If-Match` does not match the current version.'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionRequired:
+      description: '`If-Match` header is missing.'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationError:
+      description: |
+        `/problems/validation-error`: one or more fields are invalid, all listed in `errors`; or
+        `/problems/no-changes`: the request would not change anything (no-op update or status
+        change to the current status).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
